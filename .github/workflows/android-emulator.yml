@@ -1,0 +1,101 @@
+name: Android APK emulator test
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: 'HTTPS direct-download URL for the APK (or use APK_PATH below)'
+        required: false
+        type: string
+      apk_path:
+        description: 'APK path already committed to the repository, e.g. test-app.apk'
+        required: false
+        default: ''
+        type: string
+      package_name:
+        description: 'Optional package name. Leave blank to detect it from the APK.'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  run-apk-on-emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Obtain APK
+        shell: bash
+        env:
+          APK_URL: ${{ inputs.apk_url }}
+          APK_PATH: ${{ inputs.apk_path }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$APK_URL" ]]; then
+            curl --fail --location --retry 3 --output app-under-test.apk "$APK_URL"
+          elif [[ -n "$APK_PATH" ]]; then
+            cp -- "$APK_PATH" app-under-test.apk
+          else
+            echo "Provide apk_url or apk_path when starting this workflow."
+            exit 2
+          fi
+          test -s app-under-test.apk
+          sha256sum app-under-test.apk
+
+      - name: Detect APK package
+        id: apk
+        shell: bash
+        env:
+          INPUT_PACKAGE: ${{ inputs.package_name }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$INPUT_PACKAGE" ]]; then
+            package="$INPUT_PACKAGE"
+          else
+            package="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort | tail -n 1 | xargs -r -I{} {} dump badging app-under-test.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+          fi
+          test -n "$package"
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+          echo "Detected package: $package"
+
+      - name: Start Android emulator, install APK, and collect diagnostics
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 4
+          ram-size: 4096M
+          heap-size: 512M
+          disk-size: 8192M
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          script: |
+            set -euxo pipefail
+            adb wait-for-device
+            adb shell getprop sys.boot_completed
+            adb install -r -d app-under-test.apk
+            adb shell monkey -p "${{ steps.apk.outputs.package }}" 1
+            sleep 12
+            mkdir -p test-results
+            adb exec-out screencap -p > test-results/screen.png
+            adb logcat -d -t 1200 > test-results/logcat.txt
+            adb shell dumpsys package "${{ steps.apk.outputs.package }}" > test-results/package.txt || true
+            adb shell dumpsys gfxinfo "${{ steps.apk.outputs.package }}" > test-results/gfxinfo.txt || true
+
+      - name: Upload emulator diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-emulator-results
+          path: |
+            app-under-test.apk
+            test-results/
+          if-no-files-found: warn
+          retention-days: 7
