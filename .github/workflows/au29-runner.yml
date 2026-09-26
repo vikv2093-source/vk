@@ -1,0 +1,98 @@
+name: AU29 Remote Code Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        description: Language (python/java/c/cpp)
+        required: true
+        type: string
+      source:
+        description: Source code
+        required: true
+        type: string
+      stdin:
+        description: Program standard input
+        required: false
+        type: string
+      request_id:
+        description: Unique request id
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  run-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Execute submitted code
+        shell: bash
+        env:
+          LANGUAGE: ${{ inputs.language }}
+          SOURCE: ${{ inputs.source }}
+          STDIN_DATA: ${{ inputs.stdin }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/au29"
+          printf '%s' "$SOURCE" > "$RUNNER_TEMP/au29/source.txt"
+          printf '%s' "$STDIN_DATA" > "$RUNNER_TEMP/au29/input.txt"
+          : > "$RUNNER_TEMP/au29/stdout.txt"
+          : > "$RUNNER_TEMP/au29/stderr.txt"
+          : > "$RUNNER_TEMP/au29/compile.txt"
+
+          LANG_LOWER="$(printf '%s' "$LANGUAGE" | tr '[:upper:]' '[:lower:]')"
+          RC=0
+          if [ "$LANG_LOWER" = "python" ] || [ "$LANG_LOWER" = "py" ]; then
+            cp "$RUNNER_TEMP/au29/source.txt" "$RUNNER_TEMP/au29/main.py"
+            timeout 60s python3 "$RUNNER_TEMP/au29/main.py" < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt"
+            RC=$?
+          elif [ "$LANG_LOWER" = "java" ]; then
+            cp "$RUNNER_TEMP/au29/source.txt" "$RUNNER_TEMP/au29/source.java"
+            CLASS_NAME="$(grep -Eo '(^|[[:space:]])(public[[:space:]]+)?(final[[:space:]]+|abstract[[:space:]]+)?class[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*' "$RUNNER_TEMP/au29/source.java" | sed -E 's/.*class[[:space:]]+//' | head -1)"
+            [ -n "$CLASS_NAME" ] || CLASS_NAME="Main"
+            if grep -Eq '^[[:space:]]*package[[:space:]]+' "$RUNNER_TEMP/au29/source.java"; then
+              echo 'Java package declarations are not supported by the remote runner.' > "$RUNNER_TEMP/au29/compile.txt"
+              RC=1
+            else
+              mv "$RUNNER_TEMP/au29/source.java" "$RUNNER_TEMP/au29/${CLASS_NAME}.java"
+              javac "$RUNNER_TEMP/au29/${CLASS_NAME}.java" > "$RUNNER_TEMP/au29/compile.txt" 2>&1
+              RC=$?
+              if [ $RC -eq 0 ]; then
+                timeout 60s java -cp "$RUNNER_TEMP/au29" "$CLASS_NAME" < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt"
+                RC=$?
+              fi
+            fi
+          elif [ "$LANG_LOWER" = "c" ]; then
+            cp "$RUNNER_TEMP/au29/source.txt" "$RUNNER_TEMP/au29/main.c"
+            gcc "$RUNNER_TEMP/au29/main.c" -O2 -std=c11 -o "$RUNNER_TEMP/au29/main" > "$RUNNER_TEMP/au29/compile.txt" 2>&1
+            RC=$?
+            if [ $RC -eq 0 ]; then
+              timeout 60s "$RUNNER_TEMP/au29/main" < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt"
+              RC=$?
+            fi
+          elif [ "$LANG_LOWER" = "cpp" ] || [ "$LANG_LOWER" = "c++" ] || [ "$LANG_LOWER" = "cxx" ]; then
+            cp "$RUNNER_TEMP/au29/source.txt" "$RUNNER_TEMP/au29/main.cpp"
+            g++ "$RUNNER_TEMP/au29/main.cpp" -O2 -std=c++17 -o "$RUNNER_TEMP/au29/main" > "$RUNNER_TEMP/au29/compile.txt" 2>&1
+            RC=$?
+            if [ $RC -eq 0 ]; then
+              timeout 60s "$RUNNER_TEMP/au29/main" < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt"
+              RC=$?
+            fi
+          else
+            echo "Unsupported language: $LANGUAGE" > "$RUNNER_TEMP/au29/stderr.txt"
+            RC=1
+          fi
+
+          export AU29_RC="$RC"
+          export AU29_REQUEST_ID="$REQUEST_ID"
+          b64() { base64 "$1" | tr -d '\n'; }
+          echo '__AU29_RESULT_BEGIN__'
+          echo "REQUEST_ID=$REQUEST_ID"
+          echo "EXIT_CODE=$RC"
+          echo "STDOUT_B64=$(b64 "$RUNNER_TEMP/au29/stdout.txt")"
+          echo "STDERR_B64=$(b64 "$RUNNER_TEMP/au29/stderr.txt")"
+          echo "COMPILE_B64=$(b64 "$RUNNER_TEMP/au29/compile.txt")"
+          echo '__AU29_RESULT_END__'
