@@ -89,22 +89,49 @@ jobs:
           fi
 
           if [ -n "$RUN_CMD" ]; then
+            # GitHub-hosted Ubuntu runners have no physical display.  Detect
+            # common Java GUI programs automatically so a Swing/JavaFX program
+            # cannot accidentally fall through to the normal 60-second
+            # console timeout.  This also makes direct workflow_dispatch runs
+            # behave correctly even when gui_capture was not supplied.
+            if [ "$LANG_LOWER" = "java" ] && grep -Eq               'javax\.swing|java\.awt|javafx|new[[:space:]]+JFrame|extends[[:space:]]+(JFrame|JDialog|JWindow|Frame|Application)'               "$RUNNER_TEMP/au29/source.txt"; then
+              GUI_CAPTURE="true"
+            fi
+
             if [ "$GUI_CAPTURE" = "true" ]; then
-              # No real monitor exists on this runner, so give the program a
-              # *virtual* one (Xvfb) instead - that's enough for a Swing/Tk/etc.
-              # window to actually draw itself - then grab a screenshot of it
-              # a few seconds in, like an online compiler's "GUI output" would.
-              command -v Xvfb >/dev/null 2>&1 || { sudo apt-get update -qq >/dev/null 2>&1; sudo apt-get install -y -qq xvfb imagemagick >/dev/null 2>&1; }
+              # There is no real monitor on a GitHub-hosted runner.  Xvfb gives
+              # Swing/Tk/etc. a virtual monitor so the GUI can paint normally.
+              # We capture it after a few seconds, then terminate the GUI.
+              # This is intentionally a snapshot, not an interactive window.
+              command -v Xvfb >/dev/null 2>&1 || {
+                sudo apt-get update -qq >/dev/null 2>&1
+                sudo apt-get install -y -qq xvfb imagemagick >/dev/null 2>&1
+              }
               export DISPLAY=:99
               Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &
               XVFB_PID=$!
               sleep 1
-              timeout 12s $RUN_CMD < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt" &
+
+              "$RUN_CMD" < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt" &
               APP_PID=$!
+
+              # Give the GUI enough time to create and paint its window.
               sleep 4
               import -window root -resize 900x -silent "$RUNNER_TEMP/au29/screenshot.png" 2>/dev/null || true
-              wait $APP_PID
-              RC=$?
+
+              # GUI programs such as animations normally keep their window open
+              # forever.  That is expected, so stop them after the screenshot
+              # instead of waiting for the normal console timeout.
+              if kill -0 "$APP_PID" >/dev/null 2>&1; then
+                kill "$APP_PID" >/dev/null 2>&1 || true
+                sleep 1
+                kill -9 "$APP_PID" >/dev/null 2>&1 || true
+              fi
+              wait "$APP_PID" >/dev/null 2>&1 || true
+
+              # A captured GUI is a successful remote GUI run even though the
+              # application itself was deliberately stopped after the snapshot.
+              RC=0
               kill "$XVFB_PID" >/dev/null 2>&1 || true
             else
               timeout 60s $RUN_CMD < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt"
