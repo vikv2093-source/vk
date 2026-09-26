@@ -1,4 +1,4 @@
-name: AU29 Remote Code Runner v5 - Swing-safe argv + multi-frame GUI capture
+name: AU29 Remote Code Runner v6 - Swing-safe argv + multi-frame GUI capture + java2d fix
 
 on:
   workflow_dispatch:
@@ -98,6 +98,19 @@ jobs:
             if [ "$GUI_CAPTURE" = "true" ]; then
               # GitHub-hosted runners are headless. Xvfb supplies a virtual
               # display so Swing can create and paint its window.
+              #
+              # Java's default rendering pipeline on Linux uses XRender and
+              # X pixmaps for offscreen/double-buffered drawing. Under Xvfb
+              # this very commonly produces a solid-black (or garbled)
+              # window to any *external* screen-grab tool, even though the
+              # app itself is drawing fine internally - a long-standing
+              # OpenJDK issue (see JDK-7172456), not a bug in the submitted
+              # program. Forcing both flags off makes Java fall back to
+              # plain software rendering straight into the window, which
+              # Xvfb + `import` can actually see.
+              if [ "$LANG_LOWER" = "java" ]; then
+                RUN_CMD=(java -Dsun.java2d.xrender=false -Dsun.java2d.pmoffscreen=false -cp "$RUNNER_TEMP/au29" "$CLASS_NAME")
+              fi
               DIAG="$RUNNER_TEMP/au29/gui_diag.txt"
               : > "$DIAG"
               if ! command -v Xvfb >/dev/null 2>&1 || ! command -v import >/dev/null 2>&1; then
