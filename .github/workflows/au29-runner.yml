@@ -1,4 +1,4 @@
-name: AU29 Remote Code Runner v3 - array-safe command execution
+name: AU29 Remote Code Runner v4 - Swing-safe argv + GUI snapshot
 
 on:
   workflow_dispatch:
@@ -91,7 +91,7 @@ jobs:
           if [ "${#RUN_CMD[@]}" -gt 0 ]; then
             # Detect Java GUI programs here too, so even an older/direct
             # workflow dispatch cannot accidentally use the console timeout.
-            if [ "$LANG_LOWER" = "java" ] && grep -Eq               'javax\.swing|java\.awt|javafx|new[[:space:]]+JFrame|extends[[:space:]]+(JFrame|JDialog|JWindow|Frame|Application)'               "$RUNNER_TEMP/au29/source.txt"; then
+            if [ "$LANG_LOWER" = "java" ] && grep -Eq               'javax[.]swing|java[.]awt|javafx|new[[:space:]]+JFrame|extends[[:space:]]+(JFrame|JDialog|JWindow|Frame|Application)'               "$RUNNER_TEMP/au29/source.txt"; then
               GUI_CAPTURE="true"
             fi
 
@@ -104,9 +104,8 @@ jobs:
               XVFB_PID=$!
               sleep 1
 
-              # RUN_CMD is a Bash array, so each argument stays separate.
-              # This is important for Java: "java", "-cp", the classpath,
-              # and "Main" must be four arguments, not one filename.
+              # Execute argv elements directly. For Java this means
+              # java, -cp, classpath and Main are separate arguments.
               "${RUN_CMD[@]}" < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt" &
               APP_PID=$!
               sleep 4
