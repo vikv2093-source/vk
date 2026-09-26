@@ -1,3 +1,4 @@
+# Android Emulator Lab workflow v3 — default APK fallback enabled
 name: Android APK emulator test
 
 on:
