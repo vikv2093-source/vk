@@ -98,11 +98,25 @@ jobs:
             if [ "$GUI_CAPTURE" = "true" ]; then
               # GitHub-hosted runners are headless. Xvfb supplies a virtual
               # display so Swing can create and paint its window.
-              command -v Xvfb >/dev/null 2>&1 || { sudo apt-get update -qq >/dev/null 2>&1; sudo apt-get install -y -qq xvfb imagemagick >/dev/null 2>&1; }
+              DIAG="$RUNNER_TEMP/au29/gui_diag.txt"
+              : > "$DIAG"
+              if ! command -v Xvfb >/dev/null 2>&1 || ! command -v import >/dev/null 2>&1; then
+                echo "installing xvfb/imagemagick..." >> "$DIAG"
+                sudo apt-get update -qq >> "$DIAG" 2>&1
+                sudo apt-get install -y -qq xvfb imagemagick >> "$DIAG" 2>&1
+              fi
+              command -v Xvfb >/dev/null 2>&1 && echo "Xvfb binary: found" >> "$DIAG" || echo "Xvfb binary: MISSING after install attempt" >> "$DIAG"
+              command -v import >/dev/null 2>&1 && echo "import (ImageMagick) binary: found" >> "$DIAG" || echo "import (ImageMagick) binary: MISSING after install attempt" >> "$DIAG"
+
               export DISPLAY=:99
-              Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &
+              Xvfb :99 -screen 0 1280x800x24 >> "$DIAG" 2>&1 &
               XVFB_PID=$!
               sleep 1
+              if kill -0 "$XVFB_PID" >/dev/null 2>&1; then
+                echo "Xvfb: running (pid $XVFB_PID) on display :99" >> "$DIAG"
+              else
+                echo "Xvfb: FAILED TO START (process exited immediately) - see output above" >> "$DIAG"
+              fi
 
               # Execute argv elements directly. For Java this means
               # java, -cp, classpath and Main are separate arguments.
@@ -116,9 +130,22 @@ jobs:
               # can flip through them like a flipbook. This still can't be
               # clicked on (there's no live connection to the sandbox), but
               # it shows *change over time* instead of one frozen frame.
+              # `import`'s own stderr is captured into DIAG instead of being
+              # thrown away, and each attempt is logged (path, exit code,
+              # byte size), so a run that still produces no frames tells you
+              # exactly which step failed instead of just "(no output)".
+              if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
+                echo "Java process: exited immediately after launch (before any frame was captured) - check stderr above/below for the real crash reason" >> "$DIAG"
+              fi
               for i in 1 2 3 4 5 6; do
                 sleep 1
-                import -window root -resize 900x -silent "$RUNNER_TEMP/au29/screenshot_${i}.png" 2>/dev/null || true
+                f="$RUNNER_TEMP/au29/screenshot_${i}.png"
+                if import -window root -resize 900x -silent "$f" >> "$DIAG" 2>&1; then
+                  sz=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null || echo "?")
+                  echo "frame $i: captured ($sz bytes)" >> "$DIAG"
+                else
+                  echo "frame $i: import command FAILED (exit $?), no screenshot written" >> "$DIAG"
+                fi
               done
 
               # GUI programs such as animations normally stay alive. Stop
@@ -146,6 +173,9 @@ jobs:
           echo "STDOUT_B64=$(b64 "$RUNNER_TEMP/au29/stdout.txt")"
           echo "STDERR_B64=$(b64 "$RUNNER_TEMP/au29/stderr.txt")"
           echo "COMPILE_B64=$(b64 "$RUNNER_TEMP/au29/compile.txt")"
+          if [ -f "$RUNNER_TEMP/au29/gui_diag.txt" ]; then
+            echo "GUI_DIAG_B64=$(b64 "$RUNNER_TEMP/au29/gui_diag.txt")"
+          fi
           for i in 1 2 3 4 5 6; do
             f="$RUNNER_TEMP/au29/screenshot_${i}.png"
             if [ -f "$f" ]; then
