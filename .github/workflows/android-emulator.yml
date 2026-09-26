@@ -6,6 +6,7 @@ on:
       apk_url:
         description: 'HTTPS direct-download URL for the APK (or use APK_PATH below)'
         required: false
+        default: 'https://www.csknight.com/ftp/app/5-40-PRO.apk'
         type: string
       apk_path:
         description: 'APK path already committed to the repository, e.g. test-app.apk'
@@ -41,8 +42,9 @@ jobs:
           elif [[ -n "$APK_PATH" ]]; then
             cp -- "$APK_PATH" app-under-test.apk
           else
-            echo "Provide apk_url or apk_path when starting this workflow."
-            exit 2
+            DEFAULT_APK_URL='https://www.csknight.com/ftp/app/5-40-PRO.apk'
+            echo "No workflow input supplied; using default APK: $DEFAULT_APK_URL"
+            curl --fail --location --retry 3 --output app-under-test.apk "$DEFAULT_APK_URL"
           fi
           test -s app-under-test.apk
           sha256sum app-under-test.apk
@@ -57,7 +59,12 @@ jobs:
           if [[ -n "$INPUT_PACKAGE" ]]; then
             package="$INPUT_PACKAGE"
           else
-            package="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort | tail -n 1 | xargs -r -I{} {} dump badging app-under-test.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            test -x "$ANDROID_HOME/platform-tools/adb"
+            AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -perm -u+x | sort | tail -n 1)"
+            test -n "$AAPT"
+            echo "Using AAPT=$AAPT"
+            package="$($AAPT dump badging app-under-test.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
           fi
           test -n "$package"
           echo "package=$package" >> "$GITHUB_OUTPUT"
@@ -78,16 +85,19 @@ jobs:
           disable-animations: true
           script: |
             set -euxo pipefail
-            adb wait-for-device
-            adb shell getprop sys.boot_completed
-            adb install -r -d app-under-test.apk
-            adb shell monkey -p "${{ steps.apk.outputs.package }}" 1
+            ADB="$ANDROID_HOME/platform-tools/adb"
+            test -x "$ADB"
+            "$ADB" version
+            "$ADB" wait-for-device
+            "$ADB" shell getprop sys.boot_completed
+            "$ADB" install -r -d app-under-test.apk
+            "$ADB" shell monkey -p "${{ steps.apk.outputs.package }}" 1
             sleep 12
             mkdir -p test-results
-            adb exec-out screencap -p > test-results/screen.png
-            adb logcat -d -t 1200 > test-results/logcat.txt
-            adb shell dumpsys package "${{ steps.apk.outputs.package }}" > test-results/package.txt || true
-            adb shell dumpsys gfxinfo "${{ steps.apk.outputs.package }}" > test-results/gfxinfo.txt || true
+            "$ADB" exec-out screencap -p > test-results/screen.png
+            "$ADB" logcat -d -t 1200 > test-results/logcat.txt
+            "$ADB" shell dumpsys package "${{ steps.apk.outputs.package }}" > test-results/package.txt || true
+            "$ADB" shell dumpsys gfxinfo "${{ steps.apk.outputs.package }}" > test-results/gfxinfo.txt || true
 
       - name: Upload emulator diagnostics
         if: always()
