@@ -1,4 +1,4 @@
-name: AU29 Remote Code Runner
+name: AU29 Remote Code Runner v3 - array-safe command execution
 
 on:
   workflow_dispatch:
@@ -50,10 +50,10 @@ jobs:
 
           LANG_LOWER="$(printf '%s' "$LANGUAGE" | tr '[:upper:]' '[:lower:]')"
           RC=0
-          RUN_CMD=""
+          RUN_CMD=()
           if [ "$LANG_LOWER" = "python" ] || [ "$LANG_LOWER" = "py" ]; then
             cp "$RUNNER_TEMP/au29/source.txt" "$RUNNER_TEMP/au29/main.py"
-            RUN_CMD="python3 $RUNNER_TEMP/au29/main.py"
+            RUN_CMD=(python3 "$RUNNER_TEMP/au29/main.py")
           elif [ "$LANG_LOWER" = "java" ]; then
             cp "$RUNNER_TEMP/au29/source.txt" "$RUNNER_TEMP/au29/source.java"
             CLASS_NAME="$(grep -Eo '(^|[[:space:]])(public[[:space:]]+)?(final[[:space:]]+|abstract[[:space:]]+)?class[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*' "$RUNNER_TEMP/au29/source.java" | sed -E 's/.*class[[:space:]]+//' | head -1)"
@@ -66,7 +66,7 @@ jobs:
               javac "$RUNNER_TEMP/au29/${CLASS_NAME}.java" > "$RUNNER_TEMP/au29/compile.txt" 2>&1
               RC=$?
               if [ $RC -eq 0 ]; then
-                RUN_CMD="java -cp $RUNNER_TEMP/au29 $CLASS_NAME"
+                RUN_CMD=(java -cp "$RUNNER_TEMP/au29" "$CLASS_NAME")
               fi
             fi
           elif [ "$LANG_LOWER" = "c" ]; then
@@ -74,67 +74,56 @@ jobs:
             gcc "$RUNNER_TEMP/au29/main.c" -O2 -std=c11 -o "$RUNNER_TEMP/au29/main" > "$RUNNER_TEMP/au29/compile.txt" 2>&1
             RC=$?
             if [ $RC -eq 0 ]; then
-              RUN_CMD="$RUNNER_TEMP/au29/main"
+              RUN_CMD=("$RUNNER_TEMP/au29/main")
             fi
           elif [ "$LANG_LOWER" = "cpp" ] || [ "$LANG_LOWER" = "c++" ] || [ "$LANG_LOWER" = "cxx" ]; then
             cp "$RUNNER_TEMP/au29/source.txt" "$RUNNER_TEMP/au29/main.cpp"
             g++ "$RUNNER_TEMP/au29/main.cpp" -O2 -std=c++17 -o "$RUNNER_TEMP/au29/main" > "$RUNNER_TEMP/au29/compile.txt" 2>&1
             RC=$?
             if [ $RC -eq 0 ]; then
-              RUN_CMD="$RUNNER_TEMP/au29/main"
+              RUN_CMD=("$RUNNER_TEMP/au29/main")
             fi
           else
             echo "Unsupported language: $LANGUAGE" > "$RUNNER_TEMP/au29/stderr.txt"
             RC=1
           fi
 
-          if [ -n "$RUN_CMD" ]; then
-            # GitHub-hosted Ubuntu runners have no physical display.  Detect
-            # common Java GUI programs automatically so a Swing/JavaFX program
-            # cannot accidentally fall through to the normal 60-second
-            # console timeout.  This also makes direct workflow_dispatch runs
-            # behave correctly even when gui_capture was not supplied.
+          if [ "${#RUN_CMD[@]}" -gt 0 ]; then
+            # Detect Java GUI programs here too, so even an older/direct
+            # workflow dispatch cannot accidentally use the console timeout.
             if [ "$LANG_LOWER" = "java" ] && grep -Eq               'javax\.swing|java\.awt|javafx|new[[:space:]]+JFrame|extends[[:space:]]+(JFrame|JDialog|JWindow|Frame|Application)'               "$RUNNER_TEMP/au29/source.txt"; then
               GUI_CAPTURE="true"
             fi
 
             if [ "$GUI_CAPTURE" = "true" ]; then
-              # There is no real monitor on a GitHub-hosted runner.  Xvfb gives
-              # Swing/Tk/etc. a virtual monitor so the GUI can paint normally.
-              # We capture it after a few seconds, then terminate the GUI.
-              # This is intentionally a snapshot, not an interactive window.
-              command -v Xvfb >/dev/null 2>&1 || {
-                sudo apt-get update -qq >/dev/null 2>&1
-                sudo apt-get install -y -qq xvfb imagemagick >/dev/null 2>&1
-              }
+              # GitHub-hosted runners are headless. Xvfb supplies a virtual
+              # display so Swing can create and paint its window.
+              command -v Xvfb >/dev/null 2>&1 || { sudo apt-get update -qq >/dev/null 2>&1; sudo apt-get install -y -qq xvfb imagemagick >/dev/null 2>&1; }
               export DISPLAY=:99
               Xvfb :99 -screen 0 1280x800x24 >/dev/null 2>&1 &
               XVFB_PID=$!
               sleep 1
 
-              "$RUN_CMD" < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt" &
+              # RUN_CMD is a Bash array, so each argument stays separate.
+              # This is important for Java: "java", "-cp", the classpath,
+              # and "Main" must be four arguments, not one filename.
+              "${RUN_CMD[@]}" < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt" &
               APP_PID=$!
-
-              # Give the GUI enough time to create and paint its window.
               sleep 4
               import -window root -resize 900x -silent "$RUNNER_TEMP/au29/screenshot.png" 2>/dev/null || true
 
-              # GUI programs such as animations normally keep their window open
-              # forever.  That is expected, so stop them after the screenshot
-              # instead of waiting for the normal console timeout.
+              # GUI programs such as animations normally stay alive. Stop
+              # them after the screenshot rather than waiting 60 seconds.
               if kill -0 "$APP_PID" >/dev/null 2>&1; then
                 kill "$APP_PID" >/dev/null 2>&1 || true
                 sleep 1
                 kill -9 "$APP_PID" >/dev/null 2>&1 || true
               fi
               wait "$APP_PID" >/dev/null 2>&1 || true
-
-              # A captured GUI is a successful remote GUI run even though the
-              # application itself was deliberately stopped after the snapshot.
               RC=0
               kill "$XVFB_PID" >/dev/null 2>&1 || true
             else
-              timeout 60s $RUN_CMD < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt"
+              timeout 60s "${RUN_CMD[@]}" < "$RUNNER_TEMP/au29/input.txt" > "$RUNNER_TEMP/au29/stdout.txt" 2> "$RUNNER_TEMP/au29/stderr.txt"
               RC=$?
             fi
           fi
